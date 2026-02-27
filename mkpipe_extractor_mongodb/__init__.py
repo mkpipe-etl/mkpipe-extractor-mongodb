@@ -1,0 +1,65 @@
+import json
+from typing import Optional
+
+from mkpipe.spark.base import BaseExtractor
+from mkpipe.models import ConnectionConfig, ExtractResult, TableConfig
+from mkpipe.utils import get_logger
+
+logger = get_logger(__name__)
+
+
+class MongoDBExtractor(BaseExtractor, variant='mongodb'):
+    def __init__(self, connection: ConnectionConfig):
+        self.connection = connection
+        self.mongo_uri = connection.mongo_uri or (
+            f'mongodb://{connection.user}:{connection.password}'
+            f'@{connection.host}:{connection.port or 27017}/{connection.database}'
+        )
+        self.database = connection.database
+
+    def extract(self, table: TableConfig, spark, last_point: Optional[str] = None) -> ExtractResult:
+        logger.info({
+            'table': table.target_name,
+            'status': 'extracting',
+            'replication_method': table.replication_method.value,
+        })
+
+        collection = table.name
+        reader = (
+            spark.read.format('mongodb')
+            .option('connection.uri', self.mongo_uri)
+            .option('database', self.database)
+            .option('collection', collection)
+        )
+
+        if table.custom_query:
+            reader = reader.option('aggregation.pipeline', table.custom_query)
+
+        if table.replication_method.value == 'incremental' and last_point and table.iterate_column:
+            pipeline = f'{{"$match": {{"{table.iterate_column}": {{"$gte": "{last_point}"}}}}}}'
+            if table.custom_query:
+                existing = json.loads(table.custom_query)
+                existing.append(json.loads(pipeline))
+                reader = reader.option('aggregation.pipeline', json.dumps(existing))
+            else:
+                reader = reader.option('aggregation.pipeline', f'[{pipeline}]')
+            write_mode = 'append'
+        else:
+            write_mode = 'overwrite'
+
+        df = reader.load()
+
+        last_point_value = None
+        if table.replication_method.value == 'incremental' and table.iterate_column:
+            from pyspark.sql import functions as F
+            row = df.agg(F.max(table.iterate_column).alias('max_val')).first()
+            if row and row['max_val'] is not None:
+                last_point_value = str(row['max_val'])
+
+        logger.info({
+            'table': table.target_name,
+            'status': 'extracted',
+            'write_mode': write_mode,
+        })
+
+        return ExtractResult(df=df, write_mode=write_mode, last_point_value=last_point_value)
