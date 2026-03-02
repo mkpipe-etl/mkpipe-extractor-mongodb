@@ -7,10 +7,10 @@ from pyspark import SparkConf
 connector_version = 'org.mongodb.spark:mongo-spark-connector_2.13:10.5.0'
 
 # Define the paths
-ROOT_DIR = os.path.realpath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
-ivy2_dir = os.path.join(ROOT_DIR, '.ivy2.5.2')
+ROOT_DIR = os.path.realpath(os.path.dirname(__file__))
+ivy2_dir = os.path.join(ROOT_DIR, '.ivy2')
 src_dir = os.path.join(ivy2_dir, 'jars')
-dest_dir = os.path.join(os.path.dirname(__file__), 'jars')
+dest_dir = os.path.join(ROOT_DIR, 'mkpipe_extractor_mongodb', 'jars')
 
 print(f'Root Directory: {ROOT_DIR}')
 print(f'Ivy2 Source Directory: {src_dir}')
@@ -31,6 +31,7 @@ os.makedirs(ivy2_dir, exist_ok=True)
 conf = SparkConf()
 conf.setAppName('install_jars')
 conf.set('spark.jars.packages', f'{connector_version}')
+conf.set('spark.jars.ivy', ivy2_dir)
 spark = SparkSession.builder.config(conf=conf).getOrCreate()
 
 # Ensure the destination directory exists
@@ -43,3 +44,9 @@ if os.path.exists(src_dir):
     print('JARs copied successfully.')
 else:
     print(f'No JARs found in {src_dir}. Ensure the package resolves correctly.')
+
+# Clean up the .ivy2 directory
+if os.path.exists(ivy2_dir):
+    print(f'Cleaning up {ivy2_dir}...')
+    shutil.rmtree(ivy2_dir)
+    print('Cleanup complete.')
