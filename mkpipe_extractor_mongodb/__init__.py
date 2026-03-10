@@ -94,6 +94,11 @@ class MongoDBExtractor(BaseExtractor, variant='mongodb'):
             .option('collection', collection)
         )
 
+        if table.partitioner:
+            reader = reader.option('partitioner', table.partitioner)
+            for key, value in table.partitioner_options.items():
+                reader = reader.option(f'partitioner.options.{key}', str(value))
+
         if table.custom_query:
             reader = reader.option('aggregation.pipeline', table.custom_query)
 
