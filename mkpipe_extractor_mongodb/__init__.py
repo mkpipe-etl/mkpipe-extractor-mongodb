@@ -94,6 +94,9 @@ class MongoDBExtractor(BaseExtractor, variant='mongodb'):
             .option('collection', collection)
         )
 
+        for key, value in self.connection.extra.items():
+            reader = reader.option(key, str(value))
+
         if table.partitioner:
             reader = reader.option('partitioner', table.partitioner)
             for key, value in table.partitioner_options.items():
