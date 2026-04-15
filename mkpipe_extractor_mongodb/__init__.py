@@ -119,7 +119,7 @@ class MongoDBExtractor(BaseExtractor, variant='mongodb'):
 
         df = reader.load()
 
-        if not df.first():
+        if not df.take(1):
             logger.info({'table': table.target_name, 'status': 'no_new_data'})
             return ExtractResult(df=None, write_mode=write_mode)
 
