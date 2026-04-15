@@ -119,6 +119,10 @@ class MongoDBExtractor(BaseExtractor, variant='mongodb'):
 
         df = reader.load()
 
+        if not df.first():
+            logger.info({'table': table.target_name, 'status': 'no_new_data'})
+            return ExtractResult(df=None, write_mode=write_mode)
+
         last_point_value = None
         if table.replication_method.value == 'incremental' and table.iterate_column:
             from pyspark.sql import functions as F
