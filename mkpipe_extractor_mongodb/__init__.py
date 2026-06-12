@@ -105,7 +105,23 @@ class MongoDBExtractor(BaseExtractor, variant='mongodb'):
         if table.custom_query:
             reader = reader.option('aggregation.pipeline', table.custom_query)
 
-        if table.replication_method.value == 'incremental' and last_point and table.iterate_column:
+        has_static_bounds = table.filter_lower_bound is not None or table.filter_upper_bound is not None
+
+        if table.replication_method.value == 'incremental' and table.iterate_column and has_static_bounds:
+            match_conditions = {}
+            if table.filter_lower_bound is not None:
+                match_conditions['$gte'] = table.filter_lower_bound
+            if table.filter_upper_bound is not None:
+                match_conditions['$lt'] = table.filter_upper_bound
+            pipeline = json.dumps({'$match': {table.iterate_column: match_conditions}})
+            if table.custom_query:
+                existing = json.loads(table.custom_query)
+                existing.append(json.loads(pipeline))
+                reader = reader.option('aggregation.pipeline', json.dumps(existing))
+            else:
+                reader = reader.option('aggregation.pipeline', f'[{pipeline}]')
+            write_mode = 'overwrite'
+        elif table.replication_method.value == 'incremental' and last_point and table.iterate_column:
             pipeline = f'{{"$match": {{"{table.iterate_column}": {{"$gte": "{last_point}"}}}}}}'
             if table.custom_query:
                 existing = json.loads(table.custom_query)
