@@ -120,7 +120,7 @@ class MongoDBExtractor(BaseExtractor, variant='mongodb'):
                 reader = reader.option('aggregation.pipeline', json.dumps(existing))
             else:
                 reader = reader.option('aggregation.pipeline', f'[{pipeline}]')
-            write_mode = 'overwrite'
+            write_mode = 'append'
         elif table.replication_method.value == 'incremental' and last_point and table.iterate_column:
             pipeline = f'{{"$match": {{"{table.iterate_column}": {{"$gte": "{last_point}"}}}}}}'
             if table.custom_query:
