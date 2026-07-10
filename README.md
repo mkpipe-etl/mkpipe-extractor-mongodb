@@ -60,6 +60,27 @@ pipelines:
   iterate_column_type: datetime
 ```
 
+### Multi-Column Incremental
+
+When a collection has both `createdDate` and `updatedDate` fields, you can track changes on either column using a YAML list. mkpipe generates a `$or` query that leverages MongoDB index intersection (IXOR):
+
+```yaml
+- name: product
+  target_name: stg_product
+  replication_method: incremental
+  iterate_column:
+    - createdDate
+    - updatedDate
+  iterate_column_type: datetime
+```
+
+Generated aggregation pipeline:
+```json
+{"$match": {"$or": [{"createdDate": {"$gte": "<last_point>"}}, {"updatedDate": {"$gte": "<last_point>"}}]}}
+```
+
+Both fields should be indexed for optimal performance.
+
 ### Custom Aggregation Pipeline
 
 ```yaml
@@ -155,7 +176,7 @@ You can set the partitioner per-table (as shown above) or per-connection via `ex
 | `name`                | string                 | required | MongoDB collection name                          |
 | `target_name`         | string                 | required | Destination table/collection name                |
 | `replication_method`  | `full` / `incremental` | `full`   | Replication strategy                             |
-| `iterate_column`      | string                 | —        | Column used for incremental watermark            |
+| `iterate_column`      | string or list         | —        | Column(s) for incremental watermark. String for single column, list for multi-column OR logic |
 | `iterate_column_type` | string                 | —        | Type hint for watermark column                   |
 | `custom_query`        | string                 | —        | MongoDB aggregation pipeline (JSON array string) |
 | `partitioner`         | string                 | —        | MongoDB Spark partitioner class name             |

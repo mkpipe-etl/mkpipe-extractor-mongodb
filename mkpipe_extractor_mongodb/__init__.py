@@ -106,6 +106,8 @@ class MongoDBExtractor(BaseExtractor, variant='mongodb'):
             reader = reader.option('aggregation.pipeline', table.custom_query)
 
         has_static_bounds = table.filter_lower_bound is not None or table.filter_upper_bound is not None
+        columns = table.iterate_columns
+        is_multi = table.is_multi_iterate_column
 
         if table.replication_method.value == 'incremental' and table.iterate_column and has_static_bounds:
             match_conditions = {}
@@ -113,7 +115,11 @@ class MongoDBExtractor(BaseExtractor, variant='mongodb'):
                 match_conditions['$gte'] = table.filter_lower_bound
             if table.filter_upper_bound is not None:
                 match_conditions['$lt'] = table.filter_upper_bound
-            pipeline = json.dumps({'$match': {table.iterate_column: match_conditions}})
+            if is_multi:
+                match_stage = {'$match': {'$or': [{col: match_conditions} for col in columns]}}
+            else:
+                match_stage = {'$match': {columns[0]: match_conditions}}
+            pipeline = json.dumps(match_stage)
             if table.custom_query:
                 existing = json.loads(table.custom_query)
                 existing.append(json.loads(pipeline))
@@ -122,7 +128,12 @@ class MongoDBExtractor(BaseExtractor, variant='mongodb'):
                 reader = reader.option('aggregation.pipeline', f'[{pipeline}]')
             write_mode = 'append'
         elif table.replication_method.value == 'incremental' and last_point and table.iterate_column:
-            pipeline = f'{{"$match": {{"{table.iterate_column}": {{"$gte": "{last_point}"}}}}}}'
+            if is_multi:
+                or_conditions = [{col: {'$gte': last_point}} for col in columns]
+                match_stage = {'$match': {'$or': or_conditions}}
+            else:
+                match_stage = {'$match': {columns[0]: {'$gte': last_point}}}
+            pipeline = json.dumps(match_stage)
             if table.custom_query:
                 existing = json.loads(table.custom_query)
                 existing.append(json.loads(pipeline))
@@ -145,7 +156,11 @@ class MongoDBExtractor(BaseExtractor, variant='mongodb'):
         last_point_value = None
         if table.replication_method.value == 'incremental' and table.iterate_column:
             from pyspark.sql import functions as F
-            row = df.agg(F.max(table.iterate_column).alias('max_val')).first()
+            if is_multi:
+                max_expr = F.greatest(*[F.max(F.col(c)) for c in columns])
+                row = df.select(max_expr.alias('max_val')).first()
+            else:
+                row = df.agg(F.max(columns[0]).alias('max_val')).first()
             if row and row['max_val'] is not None:
                 last_point_value = str(row['max_val'])
 
