@@ -144,7 +144,7 @@ class MongoDBExtractor(BaseExtractor, variant='mongodb'):
         else:
             write_mode = 'overwrite'
 
-        df = reader.load()
+        df = self._cached(reader.load())
 
         if not df.take(1):
             if write_mode == 'overwrite':
