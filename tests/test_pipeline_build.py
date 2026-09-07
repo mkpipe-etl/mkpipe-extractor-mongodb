@@ -75,7 +75,7 @@ def test_incremental_with_last_point_watermark_and_data_read():
 
     wm_reader, data_reader = spark.readers
     # watermark: custom_query + incremental $match + $group, single partition
-    assert wm_reader.options['partitioner'].endswith('SinglePartitioner')
+    assert wm_reader.options['partitioner'].endswith('SinglePartitionPartitioner')
     wm = _pipeline(wm_reader)
     assert wm[0] == {'$match': {'x': {'$exists': True}}}
     assert wm[1] == {

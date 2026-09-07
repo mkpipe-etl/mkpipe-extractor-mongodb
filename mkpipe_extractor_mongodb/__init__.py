@@ -94,7 +94,7 @@ class MongoDBExtractor(BaseExtractor, variant='mongodb'):
         if single_partition:
             reader = reader.option(
                 'partitioner',
-                'com.mongodb.spark.sql.connector.read.partitioner.SinglePartitioner',
+                'com.mongodb.spark.sql.connector.read.partitioner.SinglePartitionPartitioner',
             )
         elif table.partitioner:
             reader = reader.option('partitioner', table.partitioner)
