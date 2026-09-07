@@ -76,6 +76,57 @@ class MongoDBExtractor(BaseExtractor, variant='mongodb'):
         )
         self.database = connection.database
 
+    def _make_reader(
+        self,
+        spark,
+        table: TableConfig,
+        pipeline_stages: Optional[list] = None,
+        single_partition: bool = False,
+    ):
+        reader = (
+            spark.read.format('mongodb')
+            .option('connection.uri', self.mongo_uri)
+            .option('database', self.database)
+            .option('collection', table.name)
+        )
+        for key, value in self.connection.extra.items():
+            reader = reader.option(key, str(value))
+        if single_partition:
+            reader = reader.option(
+                'partitioner',
+                'com.mongodb.spark.sql.connector.read.partitioner.SinglePartitioner',
+            )
+        elif table.partitioner:
+            reader = reader.option('partitioner', table.partitioner)
+            for key, value in table.partitioner_options.items():
+                reader = reader.option(f'partitioner.options.{key}', str(value))
+        if pipeline_stages:
+            reader = reader.option('aggregation.pipeline', json.dumps(pipeline_stages))
+        return reader
+
+    def _watermark(self, spark, table: TableConfig, base_stages: list) -> Optional[str]:
+        """Resolve max(iterate_column) server-side over the same filter as extraction.
+
+        Single partition, single row — a tiny index-backed aggregation instead
+        of a Spark-side agg over the full extraction df.
+        """
+        group_stage = {
+            '$group': {
+                '_id': None,
+                **{f'_mk_m{i}': {'$max': f'${c}'} for i, c in enumerate(table.iterate_columns)},
+            }
+        }
+        row = (
+            self._make_reader(spark, table, base_stages + [group_stage], single_partition=True)
+            .load()
+            .first()
+        )
+        if row is None:
+            return None
+        values = [row[f'_mk_m{i}'] for i in range(len(table.iterate_columns))]
+        values = [v for v in values if v is not None]
+        return str(max(values)) if values else None
+
     def extract(self, table: TableConfig, spark, last_point: Optional[str] = None) -> ExtractResult:
         if _is_tls_insecure(self.mongo_uri):
             _configure_jvm_tls_insecure(spark)
@@ -86,83 +137,42 @@ class MongoDBExtractor(BaseExtractor, variant='mongodb'):
             'replication_method': table.replication_method.value,
         })
 
-        collection = table.name
-        reader = (
-            spark.read.format('mongodb')
-            .option('connection.uri', self.mongo_uri)
-            .option('database', self.database)
-            .option('collection', collection)
-        )
-
-        for key, value in self.connection.extra.items():
-            reader = reader.option(key, str(value))
-
-        if table.partitioner:
-            reader = reader.option('partitioner', table.partitioner)
-            for key, value in table.partitioner_options.items():
-                reader = reader.option(f'partitioner.options.{key}', str(value))
-
-        if table.custom_query:
-            reader = reader.option('aggregation.pipeline', table.custom_query)
-
+        pipeline_stages = json.loads(table.custom_query) if table.custom_query else []
+        is_incremental = table.replication_method.value == 'incremental' and table.iterate_column
         has_static_bounds = table.filter_lower_bound is not None or table.filter_upper_bound is not None
         columns = table.iterate_columns
         is_multi = table.is_multi_iterate_column
 
-        if table.replication_method.value == 'incremental' and table.iterate_column and has_static_bounds:
+        if is_incremental and (has_static_bounds or last_point):
             match_conditions = {}
-            if table.filter_lower_bound is not None:
-                match_conditions['$gte'] = table.filter_lower_bound
-            if table.filter_upper_bound is not None:
-                match_conditions['$lt'] = table.filter_upper_bound
+            if has_static_bounds:
+                if table.filter_lower_bound is not None:
+                    match_conditions['$gte'] = table.filter_lower_bound
+                if table.filter_upper_bound is not None:
+                    match_conditions['$lt'] = table.filter_upper_bound
+            else:
+                match_conditions['$gte'] = last_point
             if is_multi:
-                match_stage = {'$match': {'$or': [{col: match_conditions} for col in columns]}}
+                pipeline_stages = pipeline_stages + [
+                    {'$match': {'$or': [{col: dict(match_conditions)} for col in columns]}}
+                ]
             else:
-                match_stage = {'$match': {columns[0]: match_conditions}}
-            pipeline = json.dumps(match_stage)
-            if table.custom_query:
-                existing = json.loads(table.custom_query)
-                existing.append(json.loads(pipeline))
-                reader = reader.option('aggregation.pipeline', json.dumps(existing))
-            else:
-                reader = reader.option('aggregation.pipeline', f'[{pipeline}]')
-            write_mode = 'append'
-        elif table.replication_method.value == 'incremental' and last_point and table.iterate_column:
-            if is_multi:
-                or_conditions = [{col: {'$gte': last_point}} for col in columns]
-                match_stage = {'$match': {'$or': or_conditions}}
-            else:
-                match_stage = {'$match': {columns[0]: {'$gte': last_point}}}
-            pipeline = json.dumps(match_stage)
-            if table.custom_query:
-                existing = json.loads(table.custom_query)
-                existing.append(json.loads(pipeline))
-                reader = reader.option('aggregation.pipeline', json.dumps(existing))
-            else:
-                reader = reader.option('aggregation.pipeline', f'[{pipeline}]')
+                pipeline_stages = pipeline_stages + [{'$match': {columns[0]: match_conditions}}]
             write_mode = 'append'
         else:
             write_mode = 'overwrite'
 
-        df = self._cached(reader.load())
-
-        if not df.take(1):
-            if write_mode == 'overwrite':
-                logger.info({'table': table.target_name, 'status': 'empty_source_initial_load'})
-                return ExtractResult(df=df, write_mode=write_mode)
-            logger.info({'table': table.target_name, 'status': 'no_new_data'})
-            return ExtractResult(df=None, write_mode=write_mode)
-
         last_point_value = None
-        if table.replication_method.value == 'incremental' and table.iterate_column:
-            from pyspark.sql import functions as F
-            if is_multi:
-                max_expr = F.greatest(*[F.max(F.col(c)) for c in columns])
-                row = df.select(max_expr.alias('max_val')).first()
-            else:
-                row = df.agg(F.max(columns[0]).alias('max_val')).first()
-            if row and row['max_val'] is not None:
-                last_point_value = str(row['max_val'])
+        if is_incremental:
+            last_point_value = self._watermark(spark, table, pipeline_stages)
+            if last_point_value is None:
+                if write_mode == 'overwrite':
+                    logger.info({'table': table.target_name, 'status': 'empty_source_initial_load'})
+                else:
+                    logger.info({'table': table.target_name, 'status': 'no_new_data'})
+                    return ExtractResult(df=None, write_mode=write_mode)
+
+        df = self._make_reader(spark, table, pipeline_stages).load()
 
         logger.info({
             'table': table.target_name,
