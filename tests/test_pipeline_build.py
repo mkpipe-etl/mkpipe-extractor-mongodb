@@ -74,13 +74,14 @@ def test_incremental_with_last_point_watermark_and_data_read():
     result = ext.extract(table, spark, last_point='2025-12-31')
 
     wm_reader, data_reader = spark.readers
-    # watermark: custom_query + incremental $match + $group, single partition
+    # watermark: incremental $match FIRST (partition planning counts only the
+    # first $match stage), then custom_query, then $group — single partition
     assert wm_reader.options['partitioner'].endswith('SinglePartitionPartitioner')
     wm = _pipeline(wm_reader)
-    assert wm[0] == {'$match': {'x': {'$exists': True}}}
-    assert wm[1] == {
+    assert wm[0] == {
         '$match': {'$or': [{'createdDate': {'$gte': '2025-12-31'}}, {'updatedDate': {'$gte': '2025-12-31'}}]}
     }
+    assert wm[1] == {'$match': {'x': {'$exists': True}}}
     assert wm[2]['$group']['_mk_m0'] == {'$max': '$createdDate'}
     assert wm[2]['$group']['_mk_m1'] == {'$max': '$updatedDate'}
     # data read: same filter, no $group, table partitioner untouched

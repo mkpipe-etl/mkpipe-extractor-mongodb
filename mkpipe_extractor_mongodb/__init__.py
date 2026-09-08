@@ -153,11 +153,14 @@ class MongoDBExtractor(BaseExtractor, variant='mongodb'):
             else:
                 match_conditions['$gte'] = last_point
             if is_multi:
-                pipeline_stages = pipeline_stages + [
-                    {'$match': {'$or': [{col: dict(match_conditions)} for col in columns]}}
-                ]
+                incremental_stage = {'$match': {'$or': [{col: dict(match_conditions)} for col in columns]}}
             else:
-                pipeline_stages = pipeline_stages + [{'$match': {columns[0]: match_conditions}}]
+                incremental_stage = {'$match': {columns[0]: match_conditions}}
+            # Prepend (not append): the connector's partitioner counts documents
+            # using only the FIRST $match stage (PartitionerHelper.matchQuery).
+            # Putting the incremental date range first keeps partition planning
+            # proportional to the delta instead of the full collection.
+            pipeline_stages = [incremental_stage] + pipeline_stages
             write_mode = 'append'
         else:
             write_mode = 'overwrite'
